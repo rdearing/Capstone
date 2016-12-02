@@ -1,0 +1,301 @@
+#load libraries - comment our when knitting pdf
+library(RCurl)
+library(dplyr)
+library(ggplot2)
+library(tm)
+library(e1071)
+library(SnowballC)
+library(RTextTools)
+library(caret)
+library(wordcloud)
+
+
+#load each data set
+n2005 <- getURL("http://www.nserc-crsng.gc.ca/opendata/NSERC_GRT_FYR2005_AWARD.csv")
+n2006 <- getURL("http://www.nserc-crsng.gc.ca/opendata/NSERC_GRT_FYR2006_AWARD.csv")
+n2007 <- getURL("http://www.nserc-crsng.gc.ca/opendata/NSERC_GRT_FYR2007_AWARD.csv")
+n2008 <- getURL("http://www.nserc-crsng.gc.ca/opendata/NSERC_GRT_FYR2008_AWARD.csv")
+n2009 <- getURL("http://www.nserc-crsng.gc.ca/opendata/NSERC_GRT_FYR2009_AWARD.csv")
+n2010 <- getURL("http://www.nserc-crsng.gc.ca/opendata/NSERC_GRT_FYR2010_AWARD.csv")
+n2011 <- getURL("http://www.nserc-crsng.gc.ca/opendata/NSERC_GRT_FYR2011_AWARD.csv")
+n2012 <- getURL("http://www.nserc-crsng.gc.ca/opendata/NSERC_GRT_FYR2012_AWARD.csv")
+n2013 <- getURL("http://www.nserc-crsng.gc.ca/opendata/NSERC_GRT_FYR2013_AWARD.csv")
+n2014 <- getURL("http://www.nserc-crsng.gc.ca/opendata/NSERC_GRT_FYR2014_AWARD.csv")
+
+#read csv and set NA values
+n2005NA <- read.csv(text = n2005, header = TRUE, sep = ",", na.strings = c("No summary - Aucun sommaire", ""))
+n2006NA <- read.csv(text = n2006, header = TRUE, sep = ",", na.strings = c("No summary - Aucun sommaire", ""))
+n2007NA <- read.csv(text = n2007, header = TRUE, sep = ",", na.strings = c("No summary - Aucun sommaire", ""))
+n2008NA <- read.csv(text = n2008, header = TRUE, sep = ",", na.strings = c("No summary - Aucun sommaire", ""))
+n2009NA <- read.csv(text = n2009, header = TRUE, sep = ",", na.strings = c("No summary - Aucun sommaire", ""))
+n2010NA <- read.csv(text = n2010, header = TRUE, sep = ",", na.strings = c("No summary - Aucun sommaire", ""))
+n2011NA <- read.csv(text = n2011, header = TRUE, sep = ",", na.strings = c("No summary - Aucun sommaire", ""))
+n2012NA <- read.csv(text = n2012, header = TRUE, sep = ",", na.strings = c("No summary - Aucun sommaire", ""))
+n2013NA <- read.csv(text = n2013, header = TRUE, sep = ",", na.strings = c("No summary - Aucun sommaire", ""))
+n2014NA <- read.csv(text = n2014, header = TRUE, sep = ",", na.strings = c("No summary - Aucun sommaire", ""))
+
+#delete 2013 and 2014 extra fields to align data schema of all data sets
+n2013NA$Num_Partie <- NULL
+n2014NA$Num_Partie <- NULL
+
+#bind data sets
+totalNSERC <- bind_rows(n2005NA, n2006NA, n2007NA, n2008NA, n2009NA, n2010NA, n2011NA, n2012NA, n2013NA, n2014NA) 
+
+#select fields of interest
+NSERC_selected <- select(totalNSERC, Institution.Établissement, FiscalYear.Exercice.financier, AwardAmount, ApplicationSummary) 
+
+#check for NAs
+sum(is.na(NSERC_selected$Institution.Établissement) == TRUE)
+sum(is.na(NSERC_selected$FiscalYear.Exercice.financier) == TRUE)
+sum(is.na(NSERC_selected$AwardAmount) == TRUE)
+sum(is.na(NSERC_selected$ApplicationSummary) == TRUE)
+#there are only NA values in the "ApplicationSummary" field
+
+#filter NA values
+NSERC_selected_filtered <- na.omit(NSERC_selected)
+
+#filter out applications in French. The most common unique french character is é. Filtering on this almost certainly eliminate all french summaries
+NSERC_selected_filtered <- NSERC_selected_filtered[grep("é",NSERC_selected_filtered$ApplicationSummary, invert= TRUE),]
+
+#save this file locally to prevent reloading large data from the web
+save(NSERC_selected_filtered, file = "NSERC.rdata")
+
+#load selected and filtered data from saved file if neccessary
+load("NSERC.rdata")
+
+#explore the data
+barplot(table(NSERC_selected_filtered$FiscalYear.Exercice.financier)) #number of summaries are increasing each year
+sum(as.numeric(NSERC_selected_filtered$AwardAmount)) #over 3.7 billion in funds
+summary(NSERC_selected_filtered$AwardAmount)
+sd(NSERC_selected_filtered$AwardAmount) #seems too high, check for outliers
+boxplot(NSERC_selected_filtered$AwardAmount)
+ggplot(NSERC_selected_filtered, aes(x = FiscalYear.Exercice.financier, y = AwardAmount )) + geom_point() #four extreme data points
+
+#Guidance from Tamer: explore the distribution to see where the values really start to take off, then cut off the top x percentile of the data
+q <- quantile(NSERC_selected_filtered$AwardAmount, c(0,1/10,2/10,3/10,4/10,5/10,6/10,7/10,8/10,9/10,1))
+q #somewhere between 80 and 90
+q <- quantile(NSERC_selected_filtered$AwardAmount, c(8/10,81/100,82/100,83/100,84/100,85/100,86/100,87/100,88/100,89/100))
+q #realtively large jump from 80 to 81 and then again from 85 to 86. Test cut offs from 80-85 (51,000-63,000)
+
+NSERC_trimmed1 <- subset(NSERC_selected_filtered, AwardAmount <= 51000)
+NSERC_trimmed2 <- subset(NSERC_selected_filtered, AwardAmount <= 55000)
+NSERC_trimmed3 <- subset(NSERC_selected_filtered, AwardAmount <= 59000)
+NSERC_trimmed4 <- subset(NSERC_selected_filtered, AwardAmount <= 63000)
+
+boxplot(NSERC_trimmed1$AwardAmount) #small outliers
+boxplot(NSERC_trimmed2$AwardAmount) #no outliers present
+boxplot(NSERC_trimmed3$AwardAmount) #large outliers 
+boxplot(NSERC_trimmed4$AwardAmount) #large outliers
+
+#somewhere between 55 and 59 thousand
+
+NSERC_trimmed5 <- subset(NSERC_selected_filtered, AwardAmount <= 56000)
+NSERC_trimmed6 <- subset(NSERC_selected_filtered, AwardAmount <= 57000)
+NSERC_trimmed7 <- subset(NSERC_selected_filtered, AwardAmount <= 58000)
+
+boxplot(NSERC_trimmed5$AwardAmount) #no outliers 
+boxplot(NSERC_trimmed6$AwardAmount) #large outliers 
+boxplot(NSERC_trimmed7$AwardAmount) #large outliers 
+
+#go with 56000 cut off (about 82% of data)
+NSERC_trimmed <- subset(NSERC_selected_filtered, AwardAmount <= 56000)
+
+#explore the new distribution
+sum(as.numeric(NSERC_trimmed$AwardAmount)) #over 1.9 billion in funds
+summary(NSERC_trimmed$AwardAmount)
+sd(NSERC_trimmed$AwardAmount) #looks much better
+ggplot(NSERC_trimmed, aes(x = FiscalYear.Exercice.financier, y = AwardAmount )) + geom_point()
+
+#bin the data, S, M, L
+q <- quantile(NSERC_trimmed$AwardAmount, c(0,1/3,2/3,1))
+q #returns 3 bins, consider small as < 23000, medium as between 23000 and 30999, and large as >= 31000
+NSERC_ready <- data.frame(NSERC_trimmed, bin=cut(NSERC_trimmed$AwardAmount, q, include.lowest = TRUE))
+barplot(table(NSERC_ready$bin), main="Distribution for Small, Medium and Large Factors", xlab="Award Size", ylab="Applications", names.arg = c("Small","Medium","Large"))
+
+#create a 2nd bin, S, L
+q <- quantile(NSERC_ready$AwardAmount, c(0,1/2,1))
+NSERC_ready <- data.frame(NSERC_ready, bin2=cut(NSERC_ready$AwardAmount, q, include.lowest = TRUE))
+barplot(table(NSERC_ready$bin2), main="Distribution for Small and Large Factors", xlab="Award Size", ylab="Applications", names.arg = c("Small","Large"))
+
+#save data for next step
+save(NSERC_ready, file = "NSERC_ready.rdata")
+
+#_____________________________move forward with clean data_________________________________________
+
+#load cleaned data if neccessary
+load("NSERC_ready.rdata")
+
+#split into test and train
+smp_size <- floor(0.65 * nrow(NSERC_ready))
+set.seed(123)
+train_ind <- sample(seq_len(nrow(NSERC_ready)), size = smp_size)
+traindata <- NSERC_ready[train_ind, ]
+testdata <- NSERC_ready[-train_ind, ]
+
+#save and load traindata as neccessary
+save(traindata, file = "train_data.rdata")
+save(testdata, file = "test_data.rdata")
+load("train_data.rdata")
+load("test_data.rdata")
+
+#create a text vector which will be used to create a source ("corpus" requires data format of "source", "source" requires "vector")
+trainvector <- as.vector(traindata$ApplicationSummary)
+testvector <- as.vector(testdata$ApplicationSummary)
+
+#create source
+trainsource <- VectorSource(trainvector)
+testsource <- VectorSource(testvector)
+
+#create corpus
+traincorpus <- Corpus(trainsource)
+testcorpus <- Corpus(testsource)
+
+# Perform transformations: remove whitespace, change to lower case, remove stop words, remove punctuation, stem, remove numbers
+traincorpus <- tm_map(traincorpus, tolower)
+traincorpus <- tm_map(traincorpus, removeWords,stopwords("english"))
+traincorpus <- tm_map(traincorpus, removeNumbers)
+traincorpus <- tm_map(traincorpus, removePunctuation)
+traincorpus <- tm_map(traincorpus, stemDocument)
+traincorpus <- tm_map(traincorpus, stripWhitespace) #this needs to happen after removals
+traincorpus <- tm_map(traincorpus, PlainTextDocument)
+
+testcorpus <- tm_map(testcorpus, tolower)
+testcorpus <- tm_map(testcorpus, removeWords,stopwords("english"))
+testcorpus <- tm_map(testcorpus, removeNumbers)
+testcorpus <- tm_map(testcorpus, removePunctuation)
+testcorpus <- tm_map(testcorpus, stemDocument)
+testcorpus <- tm_map(testcorpus, stripWhitespace) #this needs to happen after removals
+testcorpus <- tm_map(testcorpus, PlainTextDocument)
+
+#create term document matrix
+trainmatrix <- DocumentTermMatrix(traincorpus, control = list(bounds = list(global = c(436,Inf)))) #remove terms if less than 1% occurance
+testmatrix <- DocumentTermMatrix(testcorpus, control = list(bounds = list(global = c(235,Inf)))) #remove terms if less than 1% occurance
+
+#save matrices
+save(trainmatrix, file = "train_matr.rdata")
+save(testmatrix, file = "test_matr.rdata")
+
+#load matrices as neccessary
+load("train_matr.rdata")
+load("test_matr.rdata")
+
+#run garbage collector to speed up processing
+gc()
+
+# _________________________________________________________________________________________________
+
+#SVM model
+
+sprs_trainmatrix <- removeSparseTerms(trainmatrix, 0.70)
+sprs_testmatrix <- removeSparseTerms(testmatrix, 0.70) #.99 failed, .95 failed, .90 failed, .80 failed, 0.70 success
+
+#format matrix and test data for svm
+dtm_svm <- as.matrix.csr(as.matrix(sprs_trainmatrix))
+traindata_svm <- factor(traindata$bin)
+dtmtest_svm <- as.matrix.csr(as.matrix(sprs_testmatrix))
+
+#build model
+svm_model <- svm(dtm_svm,traindata_svm, kernel = "linear")
+
+#evaluate results
+svm_results <- predict(svm_model,newdata = dtm_svm)
+
+save(svm_model, file = "svm_model.rdata")
+save(svm_results, file = "svm_results.rdata")
+
+#load data if neccessary
+load("svm_results.rdata")
+load("svm_model.rdata")
+
+#view accuracy
+svm_conf_mat <- table(pred=svm_results, true=traindata$bin)
+svm_AC <- (svm_conf_mat[1,1] + svm_conf_mat[2,2] + svm_conf_mat[3,3]) / sum(svm_conf_mat)
+#39.1% accuracy is inferior to 48.4%, not surprising given the compromises made to obtain a model
+
+#_____________________________________________________________________________________
+
+#nb model 
+
+#train nb model (s,m,l)
+nb_model <- naiveBayes(as.matrix(trainmatrix),as.factor(traindata$bin))
+
+#train nb2 model (s,l)
+nb2_model <- naiveBayes(as.matrix(trainmatrix),as.factor(traindata$bin2))
+
+#get nb predictions
+nb_results <- predict(nb_model,as.matrix(testmatrix))
+
+#get nb2 predictions
+nb2_results <- predict(nb2_model,as.matrix(testmatrix))
+
+#save models and predictions
+save(nb_model, file = "nb_model.rdata")
+save(nb_results, file = "nb_results.rdata")
+save(nb2_model, file = "nb2_model.rdata")
+save(nb2_results, file = "nb2_results.rdata")
+
+#_____________________________________________________________________________________
+
+#load models and results
+load("nb_results.rdata")
+load("nb_model.rdata")
+load("nb2_results.rdata")
+load("nb2_model.rdata")
+
+#create confusion matrix for nb
+nb_conf_mat <- table(pred=nb_results, true=testdata$bin)
+nb_AC <- (nb_conf_mat[1,1] + nb_conf_mat[2,2] + nb_conf_mat[3,3]) / sum(nb_conf_mat) #48.4% accuracy
+
+#create confusion matrix for nb2
+nb2_conf_mat <- table(pred=nb2_results, true=testdata$bin2)
+nb2_AC <- (nb2_conf_mat[1,1] + nb2_conf_mat[2,2]) / sum(nb2_conf_mat)
+
+save(nb_conf_mat, file = "cm.rdata")
+load("cm.rdata")
+
+save(nb2_conf_mat, file = "cm2.rdata")
+load("cm2.rdata")
+
+#more detailed measures, precision, recall, accuracy, kappa, F1
+measures <- confusionMatrix(nb_conf_mat, mode = "prec_recall")
+measures2 <- confusionMatrix(nb2_conf_mat, mode = "prec_recall")
+
+#Extra - Play with word clouds
+load("NSERC_ready.rdata")
+
+Small <- subset(NSERC_ready$ApplicationSummary, NSERC_ready$bin2 == "[7,2.6e+04]")
+Large <- subset(NSERC_ready$ApplicationSummary, NSERC_ready$bin2 == "(2.6e+04,5.6e+04]")
+
+Smallvector <- as.vector(Small)
+Largevector <- as.vector(Large)
+Smallsource <- VectorSource(Smallvector)
+Largesource <- VectorSource(Largevector)
+Smallcorpus <- Corpus(Smallsource)
+Largecorpus <- Corpus(Largesource)
+
+# Perform transformations
+Smallcorpus <- tm_map(Smallcorpus, tolower)
+Smallcorpus <- tm_map(Smallcorpus, removeWords,stopwords("english"))
+Smallcorpus <- tm_map(Smallcorpus, removeNumbers)
+Smallcorpus <- tm_map(Smallcorpus, removePunctuation)
+Smallcorpus <- tm_map(Smallcorpus, stemDocument)
+Smallcorpus <- tm_map(Smallcorpus, stripWhitespace)
+Smallcorpus <- tm_map(Smallcorpus, PlainTextDocument)
+
+Largecorpus <- tm_map(Largecorpus, tolower)
+Largecorpus <- tm_map(Largecorpus, removeWords,stopwords("english"))
+Largecorpus <- tm_map(Largecorpus, removeNumbers)
+Largecorpus <- tm_map(Largecorpus, removePunctuation)
+Largecorpus <- tm_map(Largecorpus, stemDocument)
+Largecorpus <- tm_map(Largecorpus, stripWhitespace)
+Largecorpus <- tm_map(Largecorpus, PlainTextDocument)
+
+
+wordcloud(Smallcorpus, max.words = 50, random.order = FALSE)
+wordcloud(Largecorpus, max.words = 50, random.order = FALSE)
+
+#remove shared words
+SmallCorpus_Rmv <- tm_map(Smallcorpus, removeWords, c("will","research","can","new","also","system","systems"))
+wordcloud(SmallCorpus_Rmv, max.words = 50, random.order = FALSE)
+LargeCorpus_Rmv <- tm_map(Largecorpus, removeWords, c("will","research","can","new","also","system","systems"))
+wordcloud(LargeCorpus_Rmv, max.words = 50, random.order = FALSE)
